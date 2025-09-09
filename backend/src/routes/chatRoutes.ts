@@ -8,41 +8,43 @@ export const invoke = async (event: LambdaEvent) => {
     return await chatController.invoke(event);
 };
 
-// Streaming chat endpoint 
+// Streaming chat endpoint using Server-Sent Events (SSE)
 export const stream = async (event: LambdaEvent) => {
-    // For streaming, we need to handle the response differently
-    // This will need to be adapted based on your Lambda streaming setup
     try {
         const streamGenerator = chatController.streamGenerator(event);
 
-        // Collect all chunks (for now - this can be optimized for true streaming)
-        let response = '';
+        // SSE requires specific headers and format
+        let sseData = '';
+
         for await (const chunk of streamGenerator) {
-            response += chunk;
+            // Format as SSE event
+            sseData += `data: ${chunk}\n\n`;
         }
 
         return {
             statusCode: 200,
             headers: {
-                'Content-Type': 'text/plain',
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache',
+                'Connection': 'keep-alive',
                 'Access-Control-Allow-Origin': '*',
                 'Access-Control-Allow-Headers': 'Content-Type,Authorization',
                 'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS'
             },
-            body: response
+            body: sseData
         };
     } catch (error) {
-        console.error('Stream handler error:', error);
+        console.error('SSE Stream handler error:', error);
         return {
             statusCode: 500,
             headers: {
-                'Content-Type': 'application/json',
+                'Content-Type': 'text/event-stream',
                 'Access-Control-Allow-Origin': '*'
             },
-            body: JSON.stringify({
-                error: 'Internal Server Error',
-                message: error instanceof Error ? error.message : 'Unknown error'
-            })
+            body: `data: ${JSON.stringify({
+                type: 'error',
+                data: error instanceof Error ? error.message : 'Unknown error'
+            })}\n\n`
         };
     }
 };

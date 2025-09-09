@@ -30,8 +30,18 @@ provider:
       allowedHeaders:
         - Content-Type
         - Authorization
+        - Accept
+        - Cache-Control
+        - DNT
+        - Referer
+        - sec-ch-ua
+        - sec-ch-ua-mobile
+        - sec-ch-ua-platform
+        - User-Agent
       allowedMethods:
+        - GET
         - POST
+        - OPTIONS
       allowCredentials: false
 
   iam:

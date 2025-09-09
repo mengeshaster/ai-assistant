@@ -67,6 +67,16 @@ export class ChatController {
             const user = this.getUserFromEvent(event);
             const request: ChatRequest = JSON.parse(event.body);
 
+            // Send typing indicator
+            yield JSON.stringify({
+                type: 'typing',
+                data: 'Assistant is thinking...',
+                timestamp: new Date().toISOString()
+            }) + '\n';
+
+            // Small delay to show typing indicator
+            await new Promise(resolve => setTimeout(resolve, 500));
+
             yield* this.chatService.processMessageStream(
                 user,
                 request.prompt,
@@ -76,7 +86,8 @@ export class ChatController {
             console.error('Streaming error:', error);
             yield JSON.stringify({
                 type: 'error',
-                data: error instanceof Error ? error.message : 'Unknown error'
+                data: error instanceof Error ? error.message : 'Unknown error',
+                timestamp: new Date().toISOString()
             }) + '\n';
         }
     }

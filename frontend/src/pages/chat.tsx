@@ -85,6 +85,9 @@ export default function Chat() {
         setInput('');
         setIsLoading(true);
 
+        // Declare timeout variable in function scope
+        let streamTimeout: NodeJS.Timeout;
+
         try {
             const assistantMessage: Message = {
                 id: (Date.now() + 1).toString(),
@@ -96,53 +99,83 @@ export default function Chat() {
 
             setMessages(prev => [...prev, assistantMessage]);
 
+            // Set a timeout to prevent indefinite streaming state
+            streamTimeout = setTimeout(() => {
+                console.warn('Stream timeout - forcing completion');
+                setIsTyping(false);
+                setMessages(prev =>
+                    prev.map(msg =>
+                        msg.id === assistantMessage.id && msg.isStreaming
+                            ? { ...msg, text: msg.text || 'Response timed out', isStreaming: false }
+                            : msg
+                    )
+                );
+                setIsLoading(false);
+            }, 30000); // 30 second timeout
+
             let fullResponse = '';
-            for await (const chunk of postStream('/dev2/chat/stream', {
-                userMessage: userMessage.text,
-                sessionId: conversationId || undefined
-            }) as AsyncGenerator<StreamChunk>) {
-                console.log('Received chunk:', chunk);
+            console.log('About to start streaming...');
+            
+            try {
+                for await (const chunk of postStream('/chat/stream', {
+                    prompt: userMessage.text,
+                    sessionId: conversationId || undefined
+                }) as AsyncGenerator<StreamChunk>) {
+                    console.log('Received chunk:', chunk);
+                    console.log('Chunk type:', chunk.type);
+                    console.log('Chunk data:', chunk.data);
 
-                if (chunk.type === 'typing') {
-                    setIsTyping(true);
-                    continue;
-                }
-
-                if (chunk.type === 'token') {
-                    setIsTyping(false);
-                    fullResponse += chunk.data || '';
-                    setMessages(prev =>
-                        prev.map(msg =>
-                            msg.id === assistantMessage.id
-                                ? { ...msg, text: fullResponse }
-                                : msg
-                        )
-                    );
-                } else if (chunk.type === 'final') {
-                    setIsTyping(false);
-                    if (chunk.metadata?.conversationId) {
-                        setConversationId(chunk.metadata.conversationId);
+                    if (chunk.type === 'typing') {
+                        setIsTyping(true);
+                        continue;
                     }
-                    setMessages(prev =>
-                        prev.map(msg =>
-                            msg.id === assistantMessage.id
-                                ? { ...msg, isStreaming: false }
-                                : msg
-                        )
-                    );
-                } else if (chunk.type === 'error') {
-                    setIsTyping(false);
-                    setError(chunk.data || 'Unknown error occurred');
-                    // Remove the streaming message on error
-                    setMessages(prev => prev.filter(msg => msg.id !== assistantMessage.id));
+
+                    if (chunk.type === 'token') {
+                        setIsTyping(false);
+                        fullResponse += chunk.data || '';
+                        console.log('Current fullResponse:', fullResponse);
+                        setMessages(prev =>
+                            prev.map(msg =>
+                                msg.id === assistantMessage.id
+                                    ? { ...msg, text: fullResponse }
+                                    : msg
+                            )
+                        );
+                    } else if (chunk.type === 'final') {
+                        setIsTyping(false);
+                        clearTimeout(streamTimeout); // Clear timeout on successful completion
+                        if (chunk.metadata?.conversationId) {
+                            setConversationId(chunk.metadata.conversationId);
+                        }
+                        setMessages(prev =>
+                            prev.map(msg =>
+                                msg.id === assistantMessage.id
+                                    ? { ...msg, isStreaming: false }
+                                    : msg
+                            )
+                        );
+                    } else if (chunk.type === 'error') {
+                        setIsTyping(false);
+                        clearTimeout(streamTimeout); // Clear timeout on error
+                        setError(chunk.data || 'Unknown error occurred');
+                        // Remove the streaming message on error
+                        setMessages(prev => prev.filter(msg => msg.id !== assistantMessage.id));
+                    }
                 }
+                console.log('Streaming completed successfully');
+            } catch (streamError) {
+                console.error('Streaming error:', streamError);
+                throw streamError; // Re-throw to be caught by outer catch
             }
         } catch (error: any) {
             console.error('Error sending message:', error);
             setIsTyping(false);
+            clearTimeout(streamTimeout); // Clear timeout on catch
 
             // Check if it's an authentication error
-            if (error.message.includes('401') || error.message.includes('Unauthorized')) {
+            if (error.message.includes('401') || 
+                error.message.includes('Unauthorized') || 
+                error.message.includes('No authentication token')) {
                 localStorage.removeItem('idToken');
                 localStorage.removeItem('accessToken');
                 localStorage.removeItem('refreshToken');
@@ -157,6 +190,9 @@ export default function Chat() {
             setMessages(prev => prev.filter(msg => !msg.isStreaming));
         } finally {
             setIsLoading(false);
+            if (streamTimeout) {
+                clearTimeout(streamTimeout);
+            }
         }
     };
 
