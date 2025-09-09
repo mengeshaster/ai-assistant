@@ -1,0 +1,180 @@
+service: ai-assistant-backend
+frameworkVersion: '3'
+useDotenv: true
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: ${env:AWS_REGION}
+  architecture: arm64
+  stage: ${opt:stage, 'dev'}
+  environment:
+    TABLE_NAME: AssistantData
+    BEDROCK_MODEL_ID: ${env:BEDROCK_MODEL_ID}
+    COGNITO_USER_POOL_ID: ${env:COGNITO_USER_POOL_ID}
+    COGNITO_APP_CLIENT_ID: ${env:COGNITO_APP_CLIENT_ID}
+    COGNITO_APP_CLIENT_SECRET: ${env:COGNITO_APP_CLIENT_SECRET}
+    WEBSEARCH_BING_ENDPOINT: ${env:WEBSEARCH_BING_ENDPOINT}
+    WEBSEARCH_BING_SECRET_NAME: ${env:WEBSEARCH_BING_SECRET_NAME}
+
+  httpApi:
+    authorizers:
+      jwt:
+        identitySource: "$request.header.Authorization"
+        issuerUrl: https://cognito-idp.${env:AWS_REGION}.amazonaws.com/${env:COGNITO_USER_POOL_ID}
+        audience:
+          - ${env:COGNITO_APP_CLIENT_ID}
+    cors:
+      allowedOrigins:
+        - '*'
+      allowedHeaders:
+        - Content-Type
+        - Authorization
+      allowedMethods:
+        - POST
+      allowCredentials: false
+
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - dynamodb:GetItem
+            - dynamodb:PutItem
+            - dynamodb:UpdateItem
+            - dynamodb:Query
+            - dynamodb:BatchWriteItem
+          Resource:
+            - { "Fn::GetAtt": [ "AssistantData", "Arn" ] }
+        - Effect: Allow
+          Action: secretsmanager:GetSecretValue
+          Resource: arn:aws:secretsmanager:${self:provider.region}:${aws:accountId}:secret:${env:WEBSEARCH_BING_SECRET_NAME}*
+        - Effect: Allow
+          Action: bedrock:InvokeModel*
+          Resource: "*"
+        - Effect: Allow
+          Action: lambda:InvokeFunction
+          Resource: "*"
+
+# ⬇️ these must be TOP-LEVEL in v3
+package:
+  individually: true
+  patterns:
+    - '!node_modules/**'
+    - '!src/**'
+    - '!test/**'
+    - '!tools/**'
+    - 'dist/**'
+
+layers:
+  awsSdkV3:
+    path: layers/aws-sdk-v3
+    compatibleRuntimes:
+      - nodejs20.x
+    compatibleArchitectures:
+      - arm64
+
+functions:
+  authLogin:
+    handler: dist/auth/login.handler
+    events:
+      - httpApi:
+          path: /auth/login
+          method: POST
+
+  chatInvoke:
+    handler: dist/routes/chatRoutes.invoke
+    layers:
+      - { Ref: AwsSdkV3LambdaLayer }
+    environment:
+      BEDROCK_REGION: ${env:BEDROCK_REGION}
+      BEDROCK_MODEL_ID: ${env:BEDROCK_MODEL_ID}
+      COGNITO_USER_POOL_ID: ${env:COGNITO_USER_POOL_ID}
+      COGNITO_APP_CLIENT_ID: ${env:COGNITO_APP_CLIENT_ID}
+      COGNITO_APP_CLIENT_SECRET: ${env:COGNITO_APP_CLIENT_SECRET}
+      TABLE_NAME: AssistantData
+      CODE_EXEC_FUNCTION: ${self:service}-${self:provider.stage}-codeExec
+      WEBSEARCH_BING_ENDPOINT: ${env:WEBSEARCH_BING_ENDPOINT}
+      WEBSEARCH_BING_SECRET_NAME: ${env:WEBSEARCH_BING_SECRET_NAME}
+    events:
+      - httpApi:
+          path: /chat/invoke
+          method: POST
+          authorizer: jwt
+
+  chatStream:
+    handler: dist/routes/chatRoutes.stream
+    layers:
+      - { Ref: AwsSdkV3LambdaLayer }
+    environment:
+      BEDROCK_REGION: ${env:BEDROCK_REGION}
+      BEDROCK_MODEL_ID: ${env:BEDROCK_MODEL_ID}
+      COGNITO_USER_POOL_ID: ${env:COGNITO_USER_POOL_ID}
+      COGNITO_APP_CLIENT_ID: ${env:COGNITO_APP_CLIENT_ID}
+      COGNITO_APP_CLIENT_SECRET: ${env:COGNITO_APP_CLIENT_SECRET}
+      TABLE_NAME: AssistantData
+      CODE_EXEC_FUNCTION: ${self:service}-${self:provider.stage}-codeExec
+      WEBSEARCH_BING_ENDPOINT: ${env:WEBSEARCH_BING_ENDPOINT}
+      WEBSEARCH_BING_SECRET_NAME: ${env:WEBSEARCH_BING_SECRET_NAME}
+    events:
+      - httpApi:
+          path: /chat/stream
+          method: POST
+          authorizer: jwt
+
+  getConversations:
+    handler: dist/routes/chatRoutes.getConversations
+    layers:
+      - { Ref: AwsSdkV3LambdaLayer }
+    environment:
+      TABLE_NAME: AssistantData
+    events:
+      - httpApi:
+          path: /chat/conversations
+          method: GET
+          authorizer: jwt
+
+  getConversation:
+    handler: dist/routes/chatRoutes.getConversation
+    layers:
+      - { Ref: AwsSdkV3LambdaLayer }
+    environment:
+      TABLE_NAME: AssistantData
+    events:
+      - httpApi:
+          path: /chat/conversations/{conversationId}
+          method: GET
+          authorizer: jwt
+
+  codeExec:
+    handler: dist/tools/codeExec.handler
+    layers:
+      - { Ref: AwsSdkV3LambdaLayer }
+
+resources:
+  Resources:
+    AssistantData:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: AssistantData
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: pk
+            AttributeType: S
+          - AttributeName: sk
+            AttributeType: S
+        KeySchema:
+          - AttributeName: pk
+            KeyType: HASH
+          - AttributeName: sk
+            KeyType: RANGE
+
+  Outputs:
+    httpApiUrl:
+      Value:
+        "Fn::Sub": "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+    tableName:
+      Value: AssistantData
+    codeExecFn:
+      Value:
+        "Fn::GetAtt": [ "CodeExecLambdaFunction", "Arn" ]
