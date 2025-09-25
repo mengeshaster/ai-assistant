@@ -139,3 +139,6 @@ temp/
 aws/
 awscliv2.zip
 *.zip
+backend/.env
+.env
+.env.*
